@@ -2,29 +2,32 @@ import tensorflow as tf
 import pickle
 import numpy as np
 import random
-from skimage.morphology import binary_dilation
+from skimage.morphology import binary_dilation,dilation,disk
 from skimage.util import random_noise
 from scipy import misc
 from tensorflow.examples.tutorials.mnist import input_data
-from DigitsData import DigitsData
+from DigitsData import DigitsData,MnistDigitsData,BalanceDigitsData
 from subprocess import call
-from skimage.transform import resize
+from skimage.transform import resize,warp,AffineTransform
 from scipy import ndimage
 alpha = 30
 def input_wrapper(f):
 	image = misc.imread(f)
 	sx,sy = image.shape
 	diff = np.abs(sx-sy)
+	#image = misc.imresize(image,(sx,int(np.round(sy*1.66))))
+	sx,sy = image.shape
 	image = np.pad(image,((sx//8,sx//8),(sy//8,sy//8)),'constant')
 	if sx > sy:
 		image = np.pad(image,((0,0),(diff//2,diff//2)),'constant')
 	else:
 		image = np.pad(image,((diff//2,diff//2),(0,0)),'constant')
 	
-	#image = dilation(image,disk(max(sx,sy)/28))
-	filter_blurred_f = ndimage.gaussian_filter(image, 1)
-	image = image + alpha * (image - filter_blurred_f)
-	image = resize(image,(32,32))
+	image = dilation(image,disk(max(sx,sy)/32))
+	#blurred_f = ndimage.gaussian_filter(image, 3)
+	#filter_blurred_f = ndimage.gaussian_filter(image, 1)
+	#image = image + alpha * (image - filter_blurred_f)
+	image = misc.imresize(image,(32,32))
 	image = np.pad(image,((2,2),(2,2)),'constant',constant_values=0)
 	#image = (image > 0) * 1.0
 	print np.max(image)
@@ -84,19 +87,22 @@ class SymbolRecognition(object):
 		print(images.shape)
 		labels = data[1]
 		batch_x = np.zeros((size,32+extra_size*2,32+extra_size*2,1))
-		batch_y = np.zeros((size,target_num+1))
+		batch_y = np.zeros((size,target_num))
 		for j in range(1,size-1):
 			prev = images[j-1,:,:]
 			next = images[j+1,:,:]
 			curr_patch = np.pad(images[j,:,:],\
 							((extra_size,extra_size),(extra_size,extra_size)),\
 							'constant',constant_values=0)
-
-			if np.random.random() < .1:
+			batch_y[j-1,:] = labels[j,:]
+			#curr_patch = self.image_deformation(curr_patch)
+			"""
+			if np.random.random() < .0:
 				curr_patch[:,:] = 0.
 				batch_y[j-1,-1] = 1.
 			else:
 				batch_y[j-1,:-1] = labels[j,:]
+			
 			if np.random.random() >= .2:
 				rs = np.random.randint(8,9)
 				curr_patch[extra_size:-extra_size,:extra_size+rs] += prev[:,-extra_size-rs:]
@@ -108,44 +114,58 @@ class SymbolRecognition(object):
 			if np.random.random() > .5:
 				curr_patch = binary_dilation(curr_patch)
 			curr_patch = random_noise(curr_patch,var = .05)
-			#print 'max patch',np.max(curr_patch)
-			curr_patch = np.float32(curr_patch)
-			curr_patch += (np.random.random() - .5) * self.random_brightness
-			curr_patch *= np.random.random() * (self.random_br_h - self.random_br_l) + self.random_br_l
-			curr_patch[curr_patch > 1] = 1
-			curr_patch[curr_patch < 0] = 0
-			#contrast adjust
-			curr_patch = (curr_patch - np.mean(curr_patch)) \
-				* (np.random.random() * (self.random_contrast_h - self.random_contrast_l) + self.random_contrast_l)\
-				+ np.mean(curr_patch)
-			curr_patch[curr_patch > 1] = 1
-			curr_patch[curr_patch < 0] = 0
+			"""
 			batch_x[j-1,:,:,0] = curr_patch
 				
 		return batch_x,batch_y
+	def add_noise(self,curr_patch):
+		if np.max(curr_patch) > 1:
+			curr_patch /= 255.
+		curr_patch = np.float32(curr_patch)
+		curr_patch += (np.random.random() - .5) * self.random_brightness
+		curr_patch *= np.random.random() * (self.random_br_h - self.random_br_l) + self.random_br_l
+		curr_patch[curr_patch > 1] = 1
+		curr_patch[curr_patch < 0] = 0
+		#contrast adjust
+		curr_patch = (curr_patch - np.mean(curr_patch)) \
+			* (np.random.random() * (self.random_contrast_h - self.random_contrast_l) + self.random_contrast_l)\
+			+ np.mean(curr_patch)
+		curr_patch[curr_patch > 1] = 1
+		curr_patch[curr_patch < 0] = 0
+		return curr_patch
 
-	def next_batch(self,dataset,size = 64,target_num = 10):
+	def image_deformation(self,image):
+		random_rot_angl = np.random.random() * np.pi/3 - np.pi/6
+		dx = image.shape[0] - image.shape[0]*np.sqrt(2)*np.cos(np.pi/4+random_rot_angl)
+		dy = image.shape[1] - image.shape[1]*np.sqrt(2)*np.cos(np.pi/4+random_rot_angl)
+		trans_mat = AffineTransform(rotation=random_rot_angl,translation=(dx,dy))
+		return warp(image,trans_mat.inverse,output_shape=image.shape)
+	def next_batch(self,dataset,size = 128,target_num = 10):
 		extra_size = self.extra_size
 		#print(size,target_num)
-		for i in range(200):
+		for i in range(20000):
 			data = dataset.next_batch(size+2)
 			#print(data[0].shape)
 			images = data[0]#np.reshape(data[0],(size+2,32,32))
 			#print(images.shape)
 			labels = data[1]
 			batch_x = np.zeros((size,32+extra_size*2,32+extra_size*2,1))
-			batch_y = np.zeros((size,target_num+1))
+			batch_y = np.zeros((size,target_num))
 			for j in range(1,size-1):
 				prev = images[j-1,:,:]
 				next = images[j+1,:,:]
 				curr_patch = np.pad(images[j,:,:],\
 								((extra_size,extra_size),(extra_size,extra_size)),\
 								'constant',constant_values=0)
-				if np.random.random() < .1:
+				batch_y[j-1,:] = labels[j,:]
+				#curr_patch = self.image_deformation(curr_patch)
+				"""
+				if np.random.random() < .0:
 					curr_patch[:,:] = 0.
 					batch_y[j-1,-1] = 1.
 				else:
 					batch_y[j-1,:-1] = labels[j,:]
+				
 				if np.random.random() >= .2:
 					rs = np.random.randint(8,9)
 					curr_patch[extra_size:-extra_size,:extra_size+rs] += prev[:,-extra_size-rs:]
@@ -153,22 +173,13 @@ class SymbolRecognition(object):
 					rs = np.random.randint(8,9)
 					curr_patch[extra_size:-extra_size,-extra_size-rs:] += next[:,:extra_size+rs]
 				curr_patch[curr_patch > 1] = 1
+
 				#curr_patch = binary_dilation(curr_patch)
 				if np.random.random() > .5:
 					curr_patch = binary_dilation(curr_patch)
 				curr_patch = random_noise(curr_patch,var = .05)
 				#print 'max patch',np.max(curr_patch)
-				curr_patch = np.float32(curr_patch)
-				curr_patch += (np.random.random() - .5) * self.random_brightness
-				curr_patch *= np.random.random() * (self.random_br_h - self.random_br_l) + self.random_br_l
-				curr_patch[curr_patch > 1] = 1
-				curr_patch[curr_patch < 0] = 0
-				#contrast adjust
-				curr_patch = (curr_patch - np.mean(curr_patch)) \
-					* (np.random.random() * (self.random_contrast_h - self.random_contrast_l) + self.random_contrast_l)\
-					+ np.mean(curr_patch)
-				curr_patch[curr_patch > 1] = 1
-				curr_patch[curr_patch < 0] = 0
+				"""
 				batch_x[j-1,:,:,0] = curr_patch
 				
 			yield batch_x,batch_y
@@ -196,27 +207,27 @@ class SymbolRecognition(object):
 		extra_size = self.extra_size
 		if self.trainflag:
 			self.x = tf.placeholder(tf.float32,[None,32+extra_size*2,32+extra_size*2,1])
-			self.y_ = tf.placeholder(tf.float32,[None,target_num+1])
+			self.y_ = tf.placeholder(tf.float32,[None,target_num])
 			padding = 'VALID'
 		else:
 			self.x = tf.placeholder(tf.float32,[1,None,None,1])
 			padding = 'VALID'
 			#self.y_ = tf.placeholder(tf.float32,[None,target_num])
 		
-		W_conv1 = self.weight_variable([5, 5, 1, 64])
+		W_conv1 = self.weight_variable([3, 3, 1, 64])
 		b_conv1 = self.bias_variable([64])
 		tmp_1,_,_ = self.batch_norm_layer(self.conv2d(self.x, W_conv1,padding=padding))
 		h_conv1 = tf.nn.relu(tmp_1)
 		h_pool1 = h_conv1#self.max_pool_2x2(h_conv1)		
 
-		W_conv2 = self.weight_variable([5, 5, 64, 64])
+		W_conv2 = self.weight_variable([3, 3, 64, 64])
 		b_conv2 = self.bias_variable([64])		
 
 		tmp_2,_,_ = self.batch_norm_layer(self.conv2d(h_pool1, W_conv2,padding=padding))
 		h_conv2 = tf.nn.relu(tmp_2)
 		h_pool2 = self.max_pool_2x2(h_conv2)		
 
-		W_conv3 = self.weight_variable([5, 5, 64, 64])
+		W_conv3 = self.weight_variable([3, 3, 64, 64])
 		b_conv3 = self.bias_variable([64])		
 
 		tmp_3,_,_ = self.batch_norm_layer(self.conv2d(h_pool2, W_conv3,padding=padding))
@@ -226,7 +237,7 @@ class SymbolRecognition(object):
 		W_fc1 = self.weight_variable([4 * 4 * 64, 1024])
 		b_fc1 = self.bias_variable([1024])		
 		"""
-		W_fc1 = self.weight_variable([5,5,64,1024])
+		W_fc1 = self.weight_variable([3,3,64,1024])
 		b_fc1 = self.bias_variable([1024])
 		#h_pool2_flat = tf.reshape(h_pool3, [-1, 4*4*64])		
 
@@ -237,12 +248,12 @@ class SymbolRecognition(object):
 		self.keep_prob = tf.placeholder(tf.float32)
 		h_fc1_drop = tf.nn.dropout(h_fc1, self.keep_prob)		
 
-		W_fc2 = self.weight_variable([1,1,1024, target_num+1])
-		b_fc2 = self.bias_variable([target_num+1])		
+		W_fc2 = self.weight_variable([5,5,1024, target_num])
+		b_fc2 = self.bias_variable([target_num])		
 		tmp_fc2,_,_ = self.batch_norm_layer(self.conv2d(h_fc1_drop, W_fc2,padding))
 
 		if self.trainflag:
-			h_fc2 = tf.reshape(tmp_fc2,[-1,target_num+1])
+			h_fc2 = tf.reshape(tmp_fc2,[-1,target_num])
 			self.y_conv=tf.nn.softmax(h_fc2)
 			self.y_res = tf.argmax(self.y_conv,1)
 			self.W_conv1 = W_conv1
@@ -259,12 +270,12 @@ class SymbolRecognition(object):
 		sess = self.sess
 		sess.run(tf.global_variables_initializer())
 		#print(self.next_batch(256))
-		data = DigitsData(data)
+		data = MnistDigitsData()
 		valid_x,valid_y = self.get_valid(data)
 
 		learn_rate = 2e-3
 		phist = .5
-		for epic in range(5):
+		for epic in range(2):
 			i=0
 			data.shuffle()
 			for batch_x, batch_y in self.next_batch(data):			
@@ -272,9 +283,9 @@ class SymbolRecognition(object):
 					h_fc1 = self.h_fc1.eval(feed_dict={
 						self.x:valid_x/1.0, self.y_: valid_y, self.keep_prob: 1.0, self.l_rate: learn_rate})
 					print('h_fc1',h_fc1.shape)
-					hit = np.zeros(target_num+1)
-					precision = np.zeros(target_num+1)
-					recall = np.zeros(target_num+1)
+					hit = np.zeros(target_num)
+					precision = np.zeros(target_num)
+					recall = np.zeros(target_num)
 					train_accuracy = accuracy.eval(feed_dict={
 						self.x:valid_x/1.0, self.y_: valid_y, self.keep_prob: 1.0, self.l_rate: learn_rate})
 					results = self.y_res.eval(feed_dict={
@@ -290,7 +301,7 @@ class SymbolRecognition(object):
 					print("step %d, training accuracy %g max %g lr %g"%(i, train_accuracy,np.max(valid_x),learn_rate))
 					if np.abs(phist - train_accuracy) / phist < .1 :
 						learn_rate /= 1.0
-					if i % 2000 == 0:
+					if i % 5000 == 0:
 						if learn_rate >= 1e-6:
 							learn_rate /= 2.
 					phist = train_accuracy
